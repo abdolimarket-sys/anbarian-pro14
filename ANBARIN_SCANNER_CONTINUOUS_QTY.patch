@@ -1,0 +1,25 @@
+--- a/src/modules/scanner.ts
++++ b/src/modules/scanner.ts
+@@ -56,7 +56,11 @@
+ 
+ let lastScanTime = 0;
+ let lastScanCode = '';
+-const GLOBAL_COOLDOWN_MS = 260;
++// The camera remains running while the quantity dialog is open. Once the user
++// confirms, allow a different barcode to be accepted almost immediately.
++// The longer same-code guard remains to prevent the same visible label from
++// being counted twice if it is still in front of the camera.
++const GLOBAL_COOLDOWN_MS = 80;
+ const SAME_CODE_COOLDOWN_MS = 1100;
+ 
+ let btBuffer = '';
+@@ -227,6 +231,9 @@
+     toast('نقش مشاهده‌گر اجازه شمارش ندارد', 'error');
+     return;
+   }
++  // Do not stop/restart the camera for the quantity dialog. Ignore decode
++  // callbacks while the dialog is open; scanning becomes available again as
++  // soon as the user confirms or closes it.
+   if (opts.isQtyModalOpen?.()) return;
+ 
+   lastScanTime = Date.now();
