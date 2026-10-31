@@ -336,16 +336,16 @@ main {
 }
 
 .scan-guide-frame {
-  width: 78%;
-  height: 28%;
-  border: 2px solid rgba(255, 255, 255, 0.85);
+  width: 88%;
+  height: 38%;
+  border: 2px solid rgba(255, 255, 255, 0.95);
   border-radius: 12px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28), 0 0 14px rgba(16, 185, 129, 0.55);
 }
 
 .scan-guide-label {
   position: absolute;
-  bottom: 18%;
+  bottom: 12%;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.55);

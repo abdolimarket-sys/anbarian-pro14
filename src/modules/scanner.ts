@@ -51,6 +51,7 @@ let nativeVideo: HTMLVideoElement | null = null;
 let nativeDetector: NativeDetector | null = null;
 let nativeRaf = 0;
 let nativeBusy = false;
+let nativeLastDetectAt = 0;
 let torchOn = false;
 
 let lastScanTime = 0;
@@ -359,9 +360,19 @@ async function startHtml5(token: number): Promise<boolean> {
     });
 
     const config: Record<string, unknown> = {
-      fps: 15,
+      // 20 FPS gives a quicker response while remaining practical on mid-range phones.
+      // No qrbox is set: decoding continues across the entire camera frame.
+      fps: 20,
       disableFlip: false,
       aspectRatio: 1.7777778,
+      // Match the older browser scanner's camera resolution request.
+      // These are ideal values so devices can negotiate a supported mode.
+      videoConstraints: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30, max: 30 },
+      },
       experimentalFeatures: { useBarCodeDetectorIfSupported: false },
     };
 
@@ -432,7 +443,11 @@ async function startHtml5(token: number): Promise<boolean> {
       return false;
     }
     html5Running = true;
-    addScannerStatus('دوربین آماده است؛ بارکد را مقابل دوربین بگیرید');
+    // Apply continuous autofocus to the actual camera track when WebView exposes it.
+    // Do not wait for this optional enhancement before enabling scanning.
+    void enableContinuousAutofocus(host);
+    addScanGuide();
+    addScannerStatus('بارکد را داخل کادر قرار دهید؛ اسکن خارج از کادر هم فعال است');
     return true;
   } catch (error) {
     console.error('[scanner] html5 initialization failed', error);
@@ -469,10 +484,11 @@ async function startNative(token: number): Promise<boolean> {
     video.playsInline = true;
     video.setAttribute('playsinline', '');
     video.setAttribute('muted', '');
-    video.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;background:#101817';
+    video.style.cssText = 'width:100%;height:100%;display:block;object-fit:cover;background:#101817';
     host.innerHTML = '';
     host.appendChild(video);
     nativeVideo = video;
+    addScanGuide();
 
     const constraints: MediaStreamConstraints[] = [
       { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
@@ -512,7 +528,12 @@ async function startNative(token: number): Promise<boolean> {
     const loop = async () => {
       if (!isCurrent(token) || !nativeVideo || !nativeDetector) return;
       nativeRaf = requestAnimationFrame(loop);
+      // Limit native detection to ~10 passes/second instead of decoding every display frame.
+      // This reduces CPU load without noticeably slowing barcode acquisition.
       if (nativeBusy || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      const now = performance.now();
+      if (now - nativeLastDetectAt < 100) return;
+      nativeLastDetectAt = now;
 
       nativeBusy = true;
       try {
@@ -529,13 +550,46 @@ async function startNative(token: number): Promise<boolean> {
     };
 
     nativeRaf = requestAnimationFrame(loop);
-    addScannerStatus('دوربین آماده است؛ بارکد را مقابل دوربین بگیرید');
+    addScannerStatus('بارکد را داخل کادر قرار دهید؛ اسکن خارج از کادر هم فعال است');
     return true;
   } catch (error) {
     console.warn('[scanner] native fallback failed', error);
     stopNative();
     return false;
   }
+}
+
+/** Requests continuous autofocus on the active Html5Qrcode camera track. */
+async function enableContinuousAutofocus(host: HTMLElement): Promise<void> {
+  try {
+    const video = host.querySelector('video');
+    const stream = video?.srcObject as MediaStream | null;
+    const track = stream?.getVideoTracks?.()[0];
+    if (!track?.applyConstraints) return;
+    const capabilities = track.getCapabilities?.() as any;
+    if (capabilities?.focusMode?.includes('continuous')) {
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] } as any);
+    }
+  } catch (error) {
+    // Autofocus controls are optional and vary by Android camera/WebView.
+    console.debug('[scanner] continuous autofocus not available', error);
+  }
+}
+
+/** Adds a visual aiming guide only; it deliberately does not crop the decode area. */
+function addScanGuide(): void {
+  const host = opts ? document.getElementById(opts.containerId) : null;
+  if (!host || host.querySelector('.scan-guide')) return;
+  const guide = document.createElement('div');
+  guide.className = 'scan-guide';
+  guide.setAttribute('aria-hidden', 'true');
+  const frame = document.createElement('div');
+  frame.className = 'scan-guide-frame';
+  const label = document.createElement('div');
+  label.className = 'scan-guide-label';
+  label.textContent = 'بارکد را داخل کادر بگیرید';
+  guide.append(frame, label);
+  host.appendChild(guide);
 }
 
 function addScannerStatus(message: string): void {
@@ -572,6 +626,7 @@ function stopNative(): void {
   }
   nativeDetector = null;
   nativeBusy = false;
+  nativeLastDetectAt = 0;
   torchOn = false;
 }
 
