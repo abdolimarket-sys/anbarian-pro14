@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'ir.azar.anbar',
+  appId: 'com.anbarian.app',
   appName: 'انبارین',
   webDir: 'dist',
   server: {
