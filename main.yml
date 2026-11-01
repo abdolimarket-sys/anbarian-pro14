@@ -11,6 +11,8 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      HAS_RELEASE_SIGNING: ${{ secrets.ANBARIN_KEYSTORE_BASE64 != '' && secrets.ANBARIN_KEYSTORE_PASSWORD != '' && secrets.ANBARIN_KEY_ALIAS != '' && secrets.ANBARIN_KEY_PASSWORD != '' }}
 
     steps:
       - name: Checkout
@@ -58,9 +60,36 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Prepare persistent release signing key
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
+        env:
+          ANBARIN_KEYSTORE_BASE64: ${{ secrets.ANBARIN_KEYSTORE_BASE64 }}
+          ANBARIN_KEYSTORE_PASSWORD: ${{ secrets.ANBARIN_KEYSTORE_PASSWORD }}
+          ANBARIN_KEY_ALIAS: ${{ secrets.ANBARIN_KEY_ALIAS }}
+          ANBARIN_KEY_PASSWORD: ${{ secrets.ANBARIN_KEY_PASSWORD }}
+        run: |
+          echo "$ANBARIN_KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/android/anbarin-release.jks"
+          echo "ANBARIN_KEYSTORE_PATH=$GITHUB_WORKSPACE/android/anbarin-release.jks" >> "$GITHUB_ENV"
+          echo "ANBARIN_KEYSTORE_PASSWORD=$ANBARIN_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANBARIN_KEY_ALIAS=$ANBARIN_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANBARIN_KEY_PASSWORD=$ANBARIN_KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Upload signed release APK
+        if: ${{ env.HAS_RELEASE_SIGNING == 'true' }}
         uses: actions/upload-artifact@v7
         with:
-          name: anbarin-debug-apk
+          name: anbarin-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Upload debug APK (test only; not for customer updates)
+        uses: actions/upload-artifact@v7
+        with:
+          name: anbarin-debug-apk-test-only
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
