@@ -1,5 +1,5 @@
 /* Anbarin Service Worker — cache core shell for offline use */
-const CACHE = 'anbarin-v1.4.1';
+const CACHE = 'anbarin-v1.4.2';
 const ASSETS = [
   './',
   './index.html',
