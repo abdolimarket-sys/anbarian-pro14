@@ -320,9 +320,17 @@ async function startCamera(token: number): Promise<void> {
     return;
   }
 
-  await stopCamera();
-  if (!isCurrent(token)) return;
+  // Avoid a needless asynchronous stop/clear on the first open. This removes
+  // startup latency when no previous camera session exists.
+  if (html5Instance || html5Running || nativeStream || nativeVideo) {
+    await stopCamera();
+    if (!isCurrent(token)) return;
+  } else {
+    stopNative();
+    host.innerHTML = '';
+  }
 
+  if (!isCurrent(token)) return;
   host.innerHTML = '';
   host.setAttribute('aria-live', 'polite');
 
@@ -391,20 +399,10 @@ async function startHtml5(token: number): Promise<boolean> {
       // Per-frame decode misses are normal; keep the UI quiet.
     };
 
-    // Prefer an identified rear camera, then let the browser resolve facingMode.
-    let cameraConfig: string | { facingMode: string } = { facingMode: 'environment' };
-    try {
-      const cameras = await window.Html5Qrcode.getCameras();
-      if (!isCurrent(token)) return false;
-      if (Array.isArray(cameras) && cameras.length) {
-        const rear = cameras.find((camera: any) =>
-          /back|rear|environment|world|پشت|عقب/i.test(camera.label || '')
-        );
-        cameraConfig = (rear || cameras[cameras.length - 1]).id;
-      }
-    } catch {
-      // Permission prompts and camera enumeration differ across WebViews.
-    }
+    // Start directly with the rear-camera constraint. Enumerating camera
+    // devices first can trigger an extra permission/device round-trip in Android
+    // WebView and makes the standalone scanner feel slower than quick count.
+    const cameraConfig: { facingMode: string } = { facingMode: 'environment' };
 
     try {
       await html5Instance.start(cameraConfig, config, onDecoded, onDecodeError);

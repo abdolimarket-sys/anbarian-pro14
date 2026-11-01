@@ -3,6 +3,7 @@
  */
 
 import type {
+  AppState,
   Product,
   AppSettings,
   Session,
@@ -156,25 +157,43 @@ export function logAudit(action: string, detail: Record<string, unknown> = {}): 
 
 // ——— Persist ———
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveQueue: Promise<void> = Promise.resolve();
 
-export function save(immediate = false): void {
-  const doSave = async () => {
-    storageBackend = await persistAppState({
-      products,
-      settings,
-      session,
-      auditLog,
-      recentScans,
-    });
+/** ذخیره‌های پشت‌سرهم را به صف می‌برد تا عملیات قدیمی‌تر دیرتر تمام نشود و
+ * نسخه تازه‌تر را بازنویسی نکند. */
+export function flushSave(): Promise<void> {
+  const snapshot: AppState = {
+    products: products.map((product) => ({ ...product })),
+    settings: { ...settings, warehouses: [...settings.warehouses] },
+    session: session ? { ...session } : null,
+    auditLog: auditLog.map((entry) => ({ ...entry, detail: { ...entry.detail } })),
+    recentScans: recentScans.map((scan) => ({ ...scan })),
   };
 
+  saveQueue = saveQueue
+    .catch((error) => { console.warn('previous save failed', error); })
+    .then(async () => {
+      storageBackend = await persistAppState(snapshot);
+      if (storageBackend === 'pending') console.error('ذخیره اطلاعات انجام نشد؛ فضای ذخیره‌سازی را بررسی کنید.');
+    });
+  return saveQueue;
+}
+
+export function save(immediate = false): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+
   if (immediate) {
-    doSave();
+    void flushSave();
     return;
   }
 
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(doSave, 400);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void flushSave();
+  }, 400);
 }
 
 export function saveSettingsNow(): void {

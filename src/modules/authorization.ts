@@ -37,6 +37,17 @@ export interface AuthorizationDecision {
   reason?: string;
 }
 
+/** Current deployment has no trusted identity/server; this is deliberately local-only. */
+export const AUTHORIZATION_MODE = 'local-only' as const;
+
+export interface LocalAuthorizationSnapshot {
+  mode: typeof AUTHORIZATION_MODE;
+  role: AppRole;
+  permissions: Permission[];
+  trustedIdentity: false;
+  warning: string;
+}
+
 /** Provider contract to implement when a real backend/auth service is selected. */
 export interface AuthorizationProvider {
   getCurrentUser(): Promise<AuthenticatedUser | null>;
@@ -60,6 +71,34 @@ const ROLE_PERMISSIONS: Record<AppRole, ReadonlySet<Permission>> = {
 /** UI convenience only; a server must repeat every authorization check. */
 export function roleAllows(role: AppRole, permission: Permission): boolean {
   return ROLE_PERMISSIONS[role].has(permission);
+}
+
+/**
+ * Builds an explicit local policy snapshot for UI gating and future migration.
+ * It is NOT proof of identity and must never be used as server-side authorization.
+ */
+export function getLocalAuthorizationSnapshot(
+  settings: Pick<AppSettings, 'role'>
+): LocalAuthorizationSnapshot {
+  const role = currentLocalRole(settings);
+  return {
+    mode: AUTHORIZATION_MODE,
+    role,
+    permissions: Array.from(ROLE_PERMISSIONS[role]),
+    trustedIdentity: false,
+    warning: 'نقش فقط روی همین دستگاه ذخیره می‌شود و احراز هویت امن نیست.',
+  };
+}
+
+/** Local permission decision for consistent UI checks; never a security boundary. */
+export function authorizeLocally(
+  settings: Pick<AppSettings, 'role'>,
+  permission: Permission
+): AuthorizationDecision {
+  const role = currentLocalRole(settings);
+  return roleAllows(role, permission)
+    ? { allowed: true }
+    : { allowed: false, reason: `نقش ${role} مجوز ${permission} را ندارد` };
 }
 
 /** Maps the current local role to the future permission model without changing current app behavior. */

@@ -6,6 +6,7 @@
 import { products, settings, filterByActiveWarehouse } from './state';
 import type { Product } from '@/types';
 import { toast } from './ui';
+import { authorizeLocally, type Permission } from './authorization';
 
 export let locationFilter = '';
 export let warehouseFilterMode: 'active' | 'all' = 'active';
@@ -155,12 +156,21 @@ export function applyRoleUI(): void {
   }
 }
 
-export function guardWrite(feature = 'این عمل'): boolean {
-  if (isViewer()) {
-    toast('نقش مشاهده‌گر اجازه «' + feature + '» ندارد', 'error');
+/** بررسی یک مجوز محلی برای یکسان‌سازی کنترل‌های رابط کاربری.
+ * این بررسی جایگزین احراز هویت یا کنترل دسترسی سمت سرور نیست.
+ */
+export function guardPermission(permission: Permission, feature = 'این عمل'): boolean {
+  const decision = authorizeLocally(settings, permission);
+  if (!decision.allowed) {
+    toast('نقش فعلی اجازه «' + feature + '» را ندارد', 'error');
     return false;
   }
   return true;
+}
+
+/** نگه‌داشتن رفتار قبلی: شمارنده و مدیر مجازند؛ مشاهده‌گر فقط خواندنی است. */
+export function guardWrite(feature = 'این عمل'): boolean {
+  return guardPermission('inventory.count', feature);
 }
 
 /** پر کردن select محل‌ها */
@@ -169,9 +179,18 @@ export function fillLocationSelect(selectId = 'locationFilterSelect'): void {
   if (!sel) return;
   const current = sel.value;
   const locs = collectLocations();
-  sel.innerHTML =
-    '<option value="">همه محل‌ها</option>' +
-    locs.map((l) => `<option value="${l.replace(/"/g, '&quot;')}">${l}</option>`).join('');
+  // Treat location names as untrusted text: never interpolate them into innerHTML.
+  sel.replaceChildren();
+  const allOption = document.createElement('option');
+  allOption.value = '';
+  allOption.textContent = 'همه محل‌ها';
+  sel.appendChild(allOption);
+  for (const location of locs) {
+    const option = document.createElement('option');
+    option.value = location;
+    option.textContent = location;
+    sel.appendChild(option);
+  }
   if (current && locs.includes(current)) sel.value = current;
   else if (locationFilter && locs.includes(locationFilter)) sel.value = locationFilter;
 }

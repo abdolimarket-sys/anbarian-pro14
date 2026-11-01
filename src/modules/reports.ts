@@ -80,7 +80,7 @@ export function buildTextReport(): string {
     `شمارش‌شده: ${s.counted} (${s.progressPct}٪)`,
     `مانده: ${s.uncounted}`,
     `تطابق: ${s.match}`,
-    `مغایرت: ${s.diffs} (بیش‌بود: ${s.over} / کسری: ${s.under})`,
+    `مغایرت: ${s.diffs} (اضافه: ${s.over} / کسری: ${s.under})`,
     `ارزش مغایرت تقریبی: ${s.valueDiff.toLocaleString('fa-IR')}`,
     `با عکس: ${s.withPhoto}`,
   ];
@@ -345,7 +345,7 @@ export function renderReportHTML(): string {
       <div class="stat-card"><div class="stat-value">${s.progressPct}٪</div><div class="stat-label">پیشرفت</div></div>
       <div class="stat-card"><div class="stat-value">${formatFaNumber(s.match)}</div><div class="stat-label">تطابق</div></div>
       <div class="stat-card"><div class="stat-value">${formatFaNumber(s.diffs)}</div><div class="stat-label">مغایرت</div></div>
-      <div class="stat-card"><div class="stat-value">${formatFaNumber(s.over)}</div><div class="stat-label">بیش‌بود</div></div>
+      <div class="stat-card"><div class="stat-value">${formatFaNumber(s.over)}</div><div class="stat-label">اضافه</div></div>
       <div class="stat-card"><div class="stat-value">${formatFaNumber(s.under)}</div><div class="stat-label">کسری</div></div>
     </div>
     <p class="hint" style="margin-top:12px">ارزش تقریبی مغایرت: <strong>${s.valueDiff.toLocaleString('fa-IR')}</strong></p>

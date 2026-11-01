@@ -144,108 +144,136 @@ export function setOperatorName(name: string): void {
   localStorage.setItem('anbar_operator', name.trim());
 }
 
-/** ذخیره کامل وضعیت برنامه */
-export async function persistAppState(
-  state: AppState
-): Promise<StorageBackend> {
+/** تشخیص حداقلی snapshot سالم؛ از مهاجرت داده‌های قدیمی جلوگیری نمی‌کند. */
+function isStateSnapshot(value: unknown): value is {
+  products: Product[];
+  settings?: AppSettings;
+  session?: Session | null;
+  auditLog?: AuditEntry[];
+  recentScans?: RecentScan[];
+  savedAt?: string;
+  version?: number;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.products)) return false;
+  // رکوردهای کالا باید شیء باشند؛ فیلدهای قدیمی/اختیاری دست‌نخورده می‌مانند.
+  if (!candidate.products.every((item) => !!item && typeof item === 'object' && !Array.isArray(item))) return false;
+  if (candidate.auditLog !== undefined && !Array.isArray(candidate.auditLog)) return false;
+  if (candidate.recentScans !== undefined && !Array.isArray(candidate.recentScans)) return false;
+  if (candidate.settings !== undefined && (!candidate.settings || typeof candidate.settings !== 'object' || Array.isArray(candidate.settings))) return false;
+  return true;
+}
+
+function snapshotTime(value: { savedAt?: string }): number {
+  const parsed = value.savedAt ? Date.parse(value.savedAt) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toPartialState(value: {
+  products: Product[];
+  settings?: AppSettings;
+  session?: Session | null;
+  auditLog?: AuditEntry[];
+  recentScans?: RecentScan[];
+}): Partial<AppState> {
+  return {
+    products: value.products,
+    settings: value.settings,
+    session: value.session,
+    auditLog: value.auditLog,
+    recentScans: value.recentScans,
+  };
+}
+
+/** ذخیره کامل وضعیت؛ پشتیبان قبلی تا زمان موفقیت ذخیره اصلی حفظ می‌شود. */
+export async function persistAppState(state: AppState): Promise<StorageBackend> {
   const full = {
     ...state,
+    // هر snapshot زمان مستقل دارد تا بازیابی بتواند نسخه تازه‌تر را تشخیص دهد.
     savedAt: new Date().toISOString(),
-    version: 2,
+    version: 3,
   };
 
   try {
     await idbPut('app_state', full);
-    // backup ثانویه
-    idbPut('autobackup', full).catch(() => {});
+
+    // نگهداری آخرین پشتیبان سالم پیش از جایگزینی آن با نسخه جدید.
     try {
-      localStorage.setItem(
-        'anbar_products_meta',
-        JSON.stringify({
-          count: state.products.length,
-          at: new Date().toISOString(),
-          note: 'full data in IndexedDB',
-        })
-      );
-    } catch {
-      // ignore
+      const previous = await idbGet<unknown>('autobackup');
+      if (isStateSnapshot(previous)) await idbPut('autobackup_prev', previous);
+      await idbPut('autobackup', full);
+    } catch (backupError) {
+      // ذخیره اصلی موفق است؛ خطای پشتیبان نباید موفقیت ذخیره اصلی را پنهان کند.
+      console.warn('autobackup update failed', backupError);
+    }
+
+    try {
+      localStorage.setItem('anbar_products_meta', JSON.stringify({
+        count: state.products.length,
+        at: full.savedAt,
+        version: full.version,
+        note: 'full data in IndexedDB',
+      }));
+    } catch (metaError) {
+      console.warn('storage metadata update failed', metaError);
     }
     return 'idb';
   } catch (err) {
     console.error('idb persist fail', err);
-    // fallback به localStorage (فقط برای دیتای کوچک)
+    // fallback قدیمی برای سازگاری؛ ممکن است به علت محدودیت فضا شکست بخورد.
     try {
       localStorage.setItem('anbar_products', JSON.stringify(state.products));
       return 'local+idb';
-    } catch {
+    } catch (fallbackError) {
+      console.error('localStorage fallback failed', fallbackError);
       return 'pending';
     }
   }
 }
 
-/** بارگذاری وضعیت برنامه با اولویت IndexedDB */
-export async function loadAppState(): Promise<{
-  state: Partial<AppState>;
-  source: string;
-}> {
-  // ۱) IndexedDB اصلی
-  try {
-    const state = await idbGet<any>('app_state');
-    if (state && Array.isArray(state.products)) {
-      return {
-        state: {
-          products: state.products,
-          settings: state.settings,
-          session: state.session,
-          auditLog: state.auditLog,
-          recentScans: state.recentScans,
-        },
-        source: 'idb',
-      };
-    }
-  } catch (e) {
-    console.warn('idb load failed', e);
-  }
+/** بارگذاری تازه‌ترین snapshot معتبر از میان ذخیره اصلی و نسخه‌های پشتیبان. */
+export async function loadAppState(): Promise<{ state: Partial<AppState>; source: string }> {
+  const candidates: Array<{ value: ReturnType<typeof toPartialState>; savedAt: number; source: string }> = [];
 
-  // ۲) مهاجرت از localStorage قدیمی
+  const addCandidate = (raw: unknown, source: string) => {
+    if (!isStateSnapshot(raw)) return;
+    candidates.push({ value: toPartialState(raw), savedAt: snapshotTime(raw), source });
+  };
+
+  // خواندن مستقل هر نسخه تا خرابی یک کلید مانع بازیابی نسخه دیگر نشود.
+  try { addCandidate(await idbGet<unknown>('app_state'), 'idb'); }
+  catch (e) { console.warn('primary state read failed', e); }
+  try { addCandidate(await idbGet<unknown>('autobackup'), 'idb-autobackup'); }
+  catch (e) { console.warn('autobackup read failed', e); }
+  try { addCandidate(await idbGet<unknown>('autobackup_prev'), 'idb-autobackup-previous'); }
+  catch (e) { console.warn('previous autobackup read failed', e); }
+
+  // مهاجرت از نسخه‌های قدیمی که فقط فهرست کالا را در localStorage داشتند.
   try {
     const raw = localStorage.getItem('anbar_products');
     if (raw) {
-      const products: Product[] = JSON.parse(raw);
-      if (Array.isArray(products) && products.length) {
-        // مهاجرت فوری
-        const snapshot = {
+      const products: unknown = JSON.parse(raw);
+      if (Array.isArray(products) && products.every((item) => !!item && typeof item === 'object' && !Array.isArray(item))) {
+        addCandidate({
           products,
           settings: loadSettings(),
           session: loadSession(),
           auditLog: loadAuditLog(),
           recentScans: loadRecentScans(),
-        };
-        idbPut('app_state', snapshot).catch(() => {});
-        return { state: snapshot, source: 'localStorage-migrated' };
+        }, 'localStorage-migrated');
       }
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    console.warn('legacy localStorage recovery failed', e);
   }
 
-  // ۳) autobackup
-  try {
-    const ab = await idbGet<any>('autobackup');
-    if (ab && Array.isArray(ab.products)) {
-      return {
-        state: {
-          products: ab.products,
-          settings: ab.settings,
-          session: ab.session,
-          auditLog: ab.auditLog,
-          recentScans: ab.recentScans,
-        },
-        source: 'idb-autobackup',
-      };
-    }
-  } catch {
-    // ignore
+  if (candidates.length) {
+    candidates.sort((a, b) => b.savedAt - a.savedAt);
+    const selected = candidates[0];
+    // فقط وقتی نسخه اصلی انتخاب شده باشد نیازی به مهاجرت نیست؛ در غیر این صورت
+    // snapshot بازیابی‌شده در ذخیره بعدی به‌عنوان نسخه اصلی ثبت خواهد شد.
+    return { state: selected.value, source: selected.source };
   }
 
   return {

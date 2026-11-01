@@ -218,19 +218,31 @@ export async function importTeamSyncPack(
   file: File,
   mode?: MergeMode
 ): Promise<MergeReport | null> {
-  const mergeMode: MergeMode =
-    mode ||
+  const requestedMode = mode ||
     ((document.getElementById('teamMergeMode') as HTMLSelectElement | null)?.value as MergeMode) ||
     'sum';
+  const mergeMode: MergeMode = ['sum', 'max', 'incoming', 'local'].includes(requestedMode)
+    ? requestedMode
+    : 'sum';
 
   try {
     const data = JSON.parse(await file.text()) as TeamSyncPack;
+    const validCount = (item: unknown): item is TeamCountItem => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+      const c = item as Record<string, unknown>;
+      const nullableNumber = (v: unknown) => v === null || v === undefined || (typeof v === 'number' && Number.isFinite(v));
+      return typeof c.name === 'string' && typeof c.code === 'string' && typeof c.sku === 'string' &&
+        typeof c.systemQty === 'number' && Number.isFinite(c.systemQty) &&
+        nullableNumber(c.countedQty) && nullableNumber(c.countedQty2) && nullableNumber(c.price) &&
+        ['location', 'warehouse', 'note', 'updatedAt'].every((key) => c[key] === undefined || c[key] === null || typeof c[key] === 'string');
+    };
     if (
       !data ||
       (data.type !== 'anbar-team-sync' && data.type !== 'anbar-partial') ||
-      !Array.isArray(data.counts)
+      !Array.isArray(data.counts) ||
+      !data.counts.every(validCount)
     ) {
-      toast('فایل همگام‌سازی معتبر نیست', 'error');
+      toast('فایل همگام‌سازی معتبر نیست یا اطلاعات شمارش ناقص است', 'error');
       return null;
     }
 
@@ -399,6 +411,7 @@ export function refreshTeamSyncUI(): void {
 interface TeamOnlineConfig { url: string; token: string }
 interface RemoteDevicePack extends TeamSyncPack { deviceId: string }
 const ONLINE_CONFIG_KEY = 'anbar_team_online_config_v1';
+const ONLINE_TOKEN_SESSION_KEY = 'anbar_team_online_token_session_v1';
 const DEVICE_KEY = 'anbar_team_device_id_v1';
 const SYNC_MODE_KEY = 'anbar_team_sync_mode_v1';
 type TeamSyncMode = 'offline' | 'live' | 'hybrid';
@@ -406,12 +419,84 @@ let autoSyncTimer: number | null = null;
 const REMOTE_CACHE_PREFIX = 'anbar_team_remote_cache_v1:';
 let onlineSyncBusy = false;
 let onlineSyncInitialized = false;
+const SYNC_REQUEST_TIMEOUT_MS = 15000;
+const MAX_REMOTE_PACK_ITEMS = 50000;
 
+/**
+ * The database URL persists, but the optional access token is session-scoped.
+ * A legacy token in localStorage is migrated once and removed from persistent storage.
+ * This reduces persistence exposure; it is not a substitute for server-side auth/rules.
+ */
 function onlineConfig(): TeamOnlineConfig {
   try {
     const parsed = JSON.parse(localStorage.getItem(ONLINE_CONFIG_KEY) || '{}');
-    return { url: String(parsed.url || '').trim().replace(/\/+$/, ''), token: String(parsed.token || '').trim() };
+    const url = String(parsed.url || '').trim().replace(/\/+$/, '');
+    let token = '';
+    try { token = String(sessionStorage.getItem(ONLINE_TOKEN_SESSION_KEY) || '').trim(); } catch { /* session storage unavailable */ }
+    const legacyToken = String(parsed.token || '').trim();
+    if (!token && legacyToken) {
+      token = legacyToken;
+      try { sessionStorage.setItem(ONLINE_TOKEN_SESSION_KEY, token); } catch { /* keep in memory for this call */ }
+      try { localStorage.setItem(ONLINE_CONFIG_KEY, JSON.stringify({ url })); } catch { /* migration is best effort */ }
+    }
+    return { url: isSafeDatabaseUrl(url) ? url : '', token };
   } catch { return { url: '', token: '' }; }
+}
+
+function isSafeDatabaseUrl(value: string): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password &&
+      !parsed.search && !parsed.hash;
+  } catch { return false; }
+}
+
+function validOptionalQuantity(value: unknown): boolean {
+  return value === null || value === undefined ||
+    (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1000000000);
+}
+
+function isValidRemotePack(value: unknown, databaseKey: string, expectedSessionId: string): value is RemoteDevicePack {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const pack = value as Partial<RemoteDevicePack>;
+  if (pack.type !== 'anbar-team-sync' || pack.version !== 4 ||
+      typeof pack.sessionId !== 'string' || pack.sessionId !== expectedSessionId ||
+      typeof pack.deviceId !== 'string' || !pack.deviceId || pack.deviceId !== databaseKey ||
+      typeof pack.operator !== 'string' || pack.operator.length > 120 ||
+      typeof pack.warehouse !== 'string' || pack.warehouse.length > 200 ||
+      typeof pack.exportedAt !== 'string' || !Number.isFinite(Date.parse(pack.exportedAt)) ||
+      !Array.isArray(pack.counts) || pack.counts.length > MAX_REMOTE_PACK_ITEMS ||
+      pack.countTotal !== pack.counts.length) return false;
+
+  const seen = new Set<string>();
+  for (const raw of pack.counts) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const item = raw as TeamCountItem;
+    if (typeof item.name !== 'string' || item.name.length > 500 ||
+        typeof item.code !== 'string' || item.code.length > 200 ||
+        typeof item.sku !== 'string' || item.sku.length > 200 ||
+        typeof item.systemQty !== 'number' || !Number.isFinite(item.systemQty) || item.systemQty < 0 ||
+        !validOptionalQuantity(item.countedQty) || !validOptionalQuantity(item.countedQty2) ||
+        (item.price !== undefined && (typeof item.price !== 'number' || !Number.isFinite(item.price) || item.price < 0)) ||
+        (item.location !== undefined && (typeof item.location !== 'string' || item.location.length > 300)) ||
+        (item.warehouse !== undefined && (typeof item.warehouse !== 'string' || item.warehouse.length > 200)) ||
+        (item.note !== undefined && (typeof item.note !== 'string' || item.note.length > 2000))) return false;
+    const key = productKey(item);
+    if (key === 'name:' || seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+async function fetchWithSyncTimeout(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal, credentials: 'omit', referrerPolicy: 'no-referrer' });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function deviceId(): string {
@@ -457,12 +542,25 @@ export function saveTeamOnlineConfig(): void {
   const tokenEl = document.getElementById('teamOnlineToken') as HTMLInputElement | null;
   const url = (urlEl?.value || '').trim().replace(/\/+$/, '');
   const token = (tokenEl?.value || '').trim();
-  if (url && !/^https:\/\//i.test(url)) {
-    toast('نشانی پایگاه داده باید با https:// شروع شود', 'error');
+  if (url.length > 2048 || token.length > 4096) {
+    toast('طول نشانی یا کلید دسترسی بیش از حد مجاز است', 'error');
+    return;
+  }
+  if (url && !isSafeDatabaseUrl(url)) {
+    toast('نشانی پایگاه داده باید HTTPS معتبر و بدون نام کاربری، رمز، پارامتر یا fragment باشد', 'error');
     return;
   }
   try {
-    localStorage.setItem(ONLINE_CONFIG_KEY, JSON.stringify({ url, token }));
+    localStorage.setItem(ONLINE_CONFIG_KEY, JSON.stringify({ url }));
+    try {
+      if (token) sessionStorage.setItem(ONLINE_TOKEN_SESSION_KEY, token);
+      else sessionStorage.removeItem(ONLINE_TOKEN_SESSION_KEY);
+    } catch {
+      if (token) {
+        toast('ذخیره موقت کلید در این نشست ممکن نشد؛ کلید ذخیره نشد', 'error');
+        return;
+      }
+    }
     configureAutoSync();
     toast(url ? 'تنظیمات همگام‌سازی آنلاین ذخیره شد' : 'تنظیمات آنلاین پاک شد؛ برای کار آفلاین حالت آفلاین را انتخاب کنید', 'success');
     refreshTeamOnlineStatus();
@@ -537,14 +635,21 @@ export async function syncTeamOnlineNow(quiet = false): Promise<void> {
     const pack = makeOnlinePack();
     if (!pack.sessionId) throw new Error('شناسه جلسه موجود نیست');
     const root = `teams/${pack.sessionId}`;
-    const put = await fetch(firebaseUrl(`${root}/devices/${pack.deviceId}`), {
+    const put = await fetchWithSyncTimeout(firebaseUrl(`${root}/devices/${pack.deviceId}`), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pack), cache: 'no-store'
     });
     if (!put.ok) throw new Error(`ارسال آنلاین ناموفق بود (HTTP ${put.status})`);
-    const get = await fetch(firebaseUrl(`${root}/devices`), { cache: 'no-store' });
+    const get = await fetchWithSyncTimeout(firebaseUrl(`${root}/devices`), { cache: 'no-store' });
     if (!get.ok) throw new Error(`دریافت آنلاین ناموفق بود (HTTP ${get.status})`);
-    const remote = await get.json() as Record<string, RemoteDevicePack> | null;
-    const all = Object.values(remote || {}).filter(p => p && p.deviceId !== pack.deviceId && Array.isArray(p.counts));
+    const remote = await get.json() as unknown;
+    const remoteObject = remote && typeof remote === 'object' && !Array.isArray(remote)
+      ? remote as Record<string, unknown> : {};
+    const remoteEntries = Object.entries(remoteObject);
+    if (remoteEntries.length > 2000) throw new Error('تعداد دستگاه‌های ثبت‌شده در جلسه بیش از حد مجاز است');
+    const all = remoteEntries
+      .filter(([key, value]) => key !== pack.deviceId && isValidRemotePack(value, key, pack.sessionId))
+      .map(([, value]) => value as RemoteDevicePack);
+    const rejectedRemotePacks = remoteEntries.length - all.length - (remoteObject[pack.deviceId] ? 1 : 0);
     const totals = new Map<string, { item: TeamCountItem; q1: number; q2: number }>();
     for (const rp of all) for (const c of rp.counts) {
       const key = productKey(c);
@@ -595,7 +700,9 @@ export async function syncTeamOnlineNow(quiet = false): Promise<void> {
     try { localStorage.setItem(cacheKey, JSON.stringify(nextCache)); } catch { /* sync still succeeds for this run */ }
     rebuildIndex(); save(true); invalidateStats();
     logAudit('team_online_sync', { sessionId: pack.sessionId, remoteDevices: all.length, remoteProducts: totals.size });
-    setOnlineStatus(`همگام‌سازی موفق · دستگاه‌های دیگر: ${all.length} · کالاهای دریافتی: ${totals.size} · ${new Date().toLocaleTimeString()}`);
+    setOnlineStatus(`همگام‌سازی موفق · دستگاه‌های دیگر: ${all.length} · کالاهای دریافتی: ${totals.size}` +
+      (rejectedRemotePacks ? ` · بسته‌های نامعتبر نادیده گرفته‌شده: ${rejectedRemotePacks}` : '') +
+      ` · ${new Date().toLocaleTimeString()}`);
     if (!quiet) toast('همگام‌سازی آنلاین انجام شد', 'success');
   } catch (err) {
     console.error('[Anbarin] team online sync failed:', err);
