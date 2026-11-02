@@ -374,7 +374,7 @@ function chooseColumnMapping(headers: string[]): Promise<Record<number, string> 
     const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'انصراف';
     cancel.style.cssText = 'flex:1;padding:11px;border:1px solid var(--border,#ccc);border-radius:10px;background:transparent;color:inherit;font:inherit;';
     const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = 'ادامه وارد کردن';
-    apply.style.cssText = 'flex:1;padding:11px;border:0;border-radius:10px;background:#0d9488;color:white;font-weight:700;font:inherit;';
+    apply.style.cssText = 'flex:1;padding:11px;border:0;border-radius:10px;background:#08734f;color:white;font-weight:700;font:inherit;';
     actions.append(cancel, apply); card.append(title, intro, form, actions); overlay.appendChild(card); document.body.appendChild(overlay);
     const finish = (value: Record<number, string> | null) => { overlay.remove(); resolve(value); };
     cancel.onclick = () => finish(null);
@@ -823,28 +823,34 @@ export function buildOfflineXlsx(
   return xlsxJoin([...localParts, ...centralParts, end]);
 }
 
-export function exportExcel(onlyDiff = false): void {
+export function exportExcel(onlyDiff = false, onlyCounted = false): void {
   if (!products.length) {
     toast('کالایی نیست', 'error');
     return;
   }
-  let list = onlyDiff
-    ? products.filter((p) => p.countedQty !== null && p.countedQty !== p.systemQty)
-    : products;
+  let list = products;
+  if (onlyCounted) {
+    list = list.filter((p) => p.countedQty != null);
+  }
+  if (onlyDiff) {
+    list = list.filter((p) => p.countedQty !== null && p.countedQty !== p.systemQty);
+  }
   if (!list.length) {
-    toast('موردی برای خروجی نیست', 'error');
+    toast(onlyCounted ? 'کالای شمارش‌شده‌ای برای خروجی نیست' : 'موردی برای خروجی نیست', 'error');
     return;
   }
 
   const data = list.map(productToExportRow);
-  const filename = `anbar-${onlyDiff ? 'diff-' : ''}${dateStr()}.xlsx`;
+  const modeTag = onlyDiff ? 'diff-' : onlyCounted ? 'counted-' : '';
+  const filename = `anbar-${modeTag}${dateStr()}.xlsx`;
+  const sheetName = onlyDiff ? 'مغایرت‌ها' : onlyCounted ? 'شمارش‌شده‌ها' : 'انبارگردانی';
 
   // Prefer SheetJS
   if (window.XLSX) {
     try {
       const ws = window.XLSX.utils.json_to_sheet(data);
       const wb = window.XLSX.utils.book_new();
-      window.XLSX.utils.book_append_sheet(wb, ws, onlyDiff ? 'مغایرت‌ها' : 'انبارگردانی');
+      window.XLSX.utils.book_append_sheet(wb, ws, sheetName);
       // در اندروید از همان پنجره «ذخیره در» استفاده کن تا کاربر محل را انتخاب کند.
       // XLSX.writeFile مستقیماً دانلود می‌کند و انتخاب محل ذخیره را دور می‌زند.
       const workbookBytes = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -856,17 +862,17 @@ export function exportExcel(onlyDiff = false): void {
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       );
       toast('پنجره انتخاب محل ذخیره فایل باز می‌شود', 'success');
-      logAudit('export_xlsx', { count: list.length, onlyDiff, engine: 'sheetjs' });
+      logAudit('export_xlsx', { count: list.length, onlyDiff, onlyCounted, engine: 'sheetjs' });
       return;
     } catch (err) {
       console.warn('SheetJS export failed, fallback offline', err);
     }
   }
 
-  // Offline fallback
+  // offline fallback
   try {
     const bytes = buildOfflineXlsx([
-      { name: onlyDiff ? 'مغایرت‌ها' : 'انبارگردانی', rows: rowsToSheet(data) },
+      { name: sheetName, rows: rowsToSheet(data) },
     ]);
     downloadFile(
       new Blob([bytes], {
@@ -875,7 +881,7 @@ export function exportExcel(onlyDiff = false): void {
       filename
     );
     toast('پنجره انتخاب محل ذخیره فایل اکسل باز می‌شود', 'success');
-    logAudit('export_xlsx', { count: list.length, onlyDiff, engine: 'offline' });
+    logAudit('export_xlsx', { count: list.length, onlyDiff, onlyCounted, engine: 'offline' });
   } catch (err) {
     console.error(err);
     toast('خطا در ساخت اکسل', 'error');

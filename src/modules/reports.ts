@@ -84,6 +84,18 @@ export function buildTextReport(): string {
     `ارزش مغایرت تقریبی: ${s.valueDiff.toLocaleString('fa-IR')}`,
     `با عکس: ${s.withPhoto}`,
   ];
+  if (isDoubleCount()) {
+    const review = computeDoubleCountReview(list);
+    lines.push(
+      '────────────────',
+      'بازبینی شمارش دوفازی',
+      `تکمیل فاز ۱: ${review.phase1Count}`,
+      `تکمیل فاز ۲: ${review.phase2Count}`,
+      `هر دو فاز تکمیل: ${review.bothCount}`,
+      `نیازمند بازبینی: ${review.reviewCount}`,
+      `اختلاف دو فاز: ${review.mismatchCount}`,
+    );
+  }
   return lines.join('\n');
 }
 
@@ -93,6 +105,88 @@ export function exportDiffsExcel(): void {
 
 export function exportFullExcel(): void {
   exportExcel(false);
+}
+
+/**
+ * خروجی اکسل مستقل فقط کالاهای شمارش‌شده
+ * - فقط کالاهایی که واقعاً شمارش شده‌اند
+ * - رعایت انبار انتخاب‌شده (activeList)
+ * - ستون‌های درخواستی + حفظ شمارش ۱ و ۲ در حالت دوفازی
+ * - هیچ تغییری روی داده‌های کالا یا شمارش اعمال نمی‌شود
+ */
+export function exportCountedExcel(): void {
+  const list = activeList().filter((p) => p.countedQty != null);
+  if (!list.length) {
+    toast('کالای شمارش‌شده‌ای برای خروجی نیست', 'error');
+    return;
+  }
+
+  const double = isDoubleCount();
+  const rows = list.map((p) => {
+    const counted = p.countedQty as number;
+    const system = p.systemQty ?? 0;
+    const row: Record<string, unknown> = {
+      بارکد: p.code || '',
+      'کد کالا': p.sku || '',
+      نام: p.name || '',
+      'موجودی سیستم': system,
+      'تعداد شمارش‌شده': counted,
+      مغایرت: counted - system,
+      'قیمت واحد': p.price || 0,
+      محل: p.location || '',
+      انبار: p.warehouse || settings.currentWarehouse || '',
+    };
+    if (double) {
+      row['شمارش ۱'] = counted;
+      row['شمارش ۲'] = p.countedQty2 != null ? p.countedQty2 : '';
+    }
+    if (p.note) row['یادداشت'] = p.note;
+    return row;
+  });
+
+  const filename = `anbar-counted-${dateStr()}.xlsx`;
+  const sheetName = 'شمارش‌شده‌ها';
+
+  // Prefer SheetJS when available (same path as other Excel exports)
+  const XLSX = (window as any).XLSX;
+  if (XLSX) {
+    try {
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      const workbookBytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      downloadFile(
+        new Blob([workbookBytes], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        }),
+        filename,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      toast(`اکسل شمارش‌شده‌ها آماده شد (${list.length} کالا)`, 'success');
+      logAudit('export_counted_xlsx', { count: list.length, warehouse: settings.currentWarehouse, engine: 'sheetjs' });
+      return;
+    } catch (err) {
+      console.warn('SheetJS counted export failed, fallback offline', err);
+    }
+  }
+
+  try {
+    const keys = Object.keys(rows[0]);
+    const sheetRows: unknown[][] = [keys, ...rows.map((r) => keys.map((k) => r[k] ?? ''))];
+    const bytes = buildOfflineXlsx([{ name: sheetName, rows: sheetRows }]);
+    downloadFile(
+      new Blob([bytes], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+      filename,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    toast(`اکسل شمارش‌شده‌ها آماده شد (${list.length} کالا)`, 'success');
+    logAudit('export_counted_xlsx', { count: list.length, warehouse: settings.currentWarehouse, engine: 'offline' });
+  } catch (err) {
+    console.error(err);
+    toast('خطا در ساخت اکسل شمارش‌شده‌ها', 'error');
+  }
 }
 
 export function exportAccountingDoc(kind: 'generic' | 'heloo' | 'sepidar' = 'generic'): void {
@@ -254,30 +348,61 @@ function exportConfiguredAccounting(kind: AccountingTemplateKind, chosen: Accoun
 }
 
 
+export interface DoubleCountReview {
+  phase1Count: number;
+  phase2Count: number;
+  bothCount: number;
+  reviewCount: number;
+  mismatchCount: number;
+}
+
+export function computeDoubleCountReview(list: Product[] = activeList()): DoubleCountReview {
+  let phase1Count = 0, phase2Count = 0, bothCount = 0, reviewCount = 0, mismatchCount = 0;
+  for (const p of list) {
+    const has1 = p.countedQty != null;
+    const has2 = p.countedQty2 != null;
+    if (has1) phase1Count++;
+    if (has2) phase2Count++;
+    if (has1 && has2) {
+      bothCount++;
+      if (p.countedQty !== p.countedQty2) mismatchCount++;
+    } else {
+      reviewCount++;
+    }
+  }
+  return { phase1Count, phase2Count, bothCount, reviewCount, mismatchCount };
+}
+
 export function exportDoubleCountMismatches(): void {
   if (!isDoubleCount()) {
     toast('شمارش دوفازی فعال نیست', 'info');
     return;
   }
-  const list = activeList().filter((p) => {
-    if (p.countedQty == null || p.countedQty2 == null) return false;
-    return p.countedQty !== p.countedQty2;
-  });
+  // Export incomplete items as well as unequal counts so an unfinished phase
+  // cannot be mistaken for a clean reconciliation. Never overwrite either count.
+  const list = activeList().filter((p) =>
+    p.countedQty == null || p.countedQty2 == null || p.countedQty !== p.countedQty2
+  );
   if (!list.length) {
-    toast('اختلافی بین فاز ۱ و ۲ نیست', 'info');
+    toast('همه کالاها در هر دو فاز شمارش شده و برابر هستند', 'info');
     return;
   }
-  const rows = list.map((p) => ({
-    بارکد: p.code || '',
-    نام: p.name,
-    'شمارش ۱': p.countedQty,
-    'شمارش ۲': p.countedQty2,
-    اختلاف: (p.countedQty2 ?? 0) - (p.countedQty ?? 0),
-    سیستم: p.systemQty,
-    محل: p.location || '',
-  }));
-  downloadFile(rowsToCSV(rows), `double-count-diff-${dateStr()}.csv`, 'text/csv;charset=utf-8');
-  toast(`${list.length} اختلاف فاز دانلود شد`, 'success');
+  const rows = list.map((p) => {
+    const has1 = p.countedQty != null;
+    const has2 = p.countedQty2 != null;
+    return {
+      بارکد: p.code || '',
+      نام: p.name,
+      'شمارش ۱': has1 ? p.countedQty : '',
+      'شمارش ۲': has2 ? p.countedQty2 : '',
+      اختلاف: has1 && has2 ? (p.countedQty2 as number) - (p.countedQty as number) : '',
+      وضعیت: !has1 && !has2 ? 'هیچ‌کدام شمارش نشده' : !has1 ? 'فاز ۱ ناقص' : !has2 ? 'فاز ۲ ناقص' : 'اختلاف دو فاز',
+      سیستم: p.systemQty,
+      محل: p.location || '',
+    };
+  });
+  downloadFile(rowsToCSV(rows), `double-count-review-${dateStr()}.csv`, 'text/csv;charset=utf-8');
+  toast(`${list.length} کالا برای بازبینی خروجی گرفته شد`, 'success');
 }
 
 export function exportStockAlerts(): void {

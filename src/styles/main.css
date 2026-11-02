@@ -1,21 +1,21 @@
 :root {
-  --primary: #0d9488;
-  --primary-dark: #0f766e;
-  --primary-deeper: #115e59;
-  --primary-soft: #ccfbf1;
-  --accent: #f59e0b;
-  --bg: #f0fdfa;
-  --bg2: #e6f7f4;
+  --primary: #08734f;
+  --primary-dark: #075c4d;
+  --primary-deeper: #06473f;
+  --primary-soft: #e5f3e8;
+  --accent: #f39200;
+  --bg: #f7fcf8;
+  --bg2: #edf7ef;
   --card: #ffffff;
-  --text: #134e4a;
-  --text-soft: #5b7a76;
+  --text: #12483d;
+  --text-soft: #617d70;
   --danger: #e11d48;
   --warning: #d97706;
   --success: #059669;
-  --border: #99f6e4;
-  --border-light: #d1fae5;
-  --shadow: 0 4px 20px rgba(13, 148, 136, 0.1);
-  --shadow-sm: 0 2px 8px rgba(13, 148, 136, 0.08);
+  --border: #b9ddc2;
+  --border-light: #dceee0;
+  --shadow: 0 4px 20px rgba(7, 92, 77, 0.10);
+  --shadow-sm: 0 2px 8px rgba(7, 92, 77, 0.08);
   --radius: 16px;
   --radius-sm: 12px;
   --nav-h: 64px;
@@ -56,7 +56,7 @@ body {
 }
 
 header {
-  background: linear-gradient(135deg, #0f766e 0%, #0d9488 50%, #14b8a6 100%);
+  background: linear-gradient(135deg, #06473f 0%, #075c4d 58%, #08734f 100%);
   color: #fff;
   padding: 14px 16px 16px;
   position: sticky;
@@ -203,9 +203,9 @@ main {
 
 /* دکمه‌های لاگ باید در حالت فعال از پس‌زمینه کارت واضحاً متمایز باشند. */
 .btn-audit-export {
-  background: #0f766e;
+  background: #075c4d;
   color: #ffffff;
-  border: 1px solid #0f766e;
+  border: 1px solid #075c4d;
   box-shadow: 0 2px 5px rgba(15, 118, 110, 0.22);
 }
 .btn-audit-clear {
@@ -322,7 +322,7 @@ main {
 }
 
 .toast.info {
-  background: linear-gradient(135deg, #0d9488, #0f766e);
+  background: linear-gradient(135deg, #08734f, #075c4d);
 }
 
 /* ——— Scanner ——— */
